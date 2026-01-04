@@ -2,7 +2,7 @@
 
 Librería (Python) + CLI para descargar datos MERRA-2 desde GES DISC (Earthdata).
 
-## Instalación desde GitHub
+## 1) Instalación desde GitHub
 ```bash
 pip install --upgrade --no-cache-dir git+https://github.com/MaicolDLC/download-merra2.git
 or
