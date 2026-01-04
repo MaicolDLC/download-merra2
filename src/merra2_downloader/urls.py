@@ -99,64 +99,50 @@ def _dds_url(producto: str, y: str, m: str, fname: str) -> str:
 
 
 _DDS_VAR_RE = re.compile(
-    r"^\s*(?:Byte|Int16|UInt16|Int32|UInt32|Int64|UInt64|Float32|Float64|String)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*;",
+    r"^\s*(?:Byte|Int16|UInt16|Int32|UInt32|Int64|UInt64|Float32|Float64|String)\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\]\s*)*;",
     re.MULTILINE,
 )
 
-
-
 def variables_from_dds(producto: str, y: str, m: str, yyyymmdd: str) -> List[str]:
-    """
-    Descubre variables reales del archivo consultando el .dds del dataset (requiere auth vía .netrc).
-
-    Nota: El DDS de THREDDS puede incluir tipos UInt* y estructuras Grid/Array.
-    Aquí extraemos todas las variables declaradas como tipos escalares/arrays.
-    """
     fname = filename_for_date(producto, yyyymmdd)
     url = _dds_url(producto, y, m, fname)
 
     s = requests.Session()
-    s.trust_env = True  # usa ~/.netrc si existe
+    s.trust_env = True
     r = s.get(url, timeout=60)
 
     if r.status_code != 200:
         raise RuntimeError(
-            f"No pude leer DDS para listar variables (HTTP {r.status_code}).\n"
-            f"URL: {url}\n"
-            "Asegúrate de tener autenticación Earthdata activa (.netrc) y que el archivo exista para esa fecha."
+            f"No pude leer DDS (HTTP {r.status_code}). URL: {url}\n"
+            "Revisa tu .netrc y que exista ese día."
         )
 
     text = r.text
 
-    # Extrae nombres con regex robusta (incluye UInt*)
     vars_found = []
     for name in _DDS_VAR_RE.findall(text):
-        if name in EXCLUDE_VARS:
-            continue
-        # Filtra variables típicas de coordenadas/dimensiones si aparecen con otro nombre
         low = name.lower()
-        if low in EXCLUDE_VARS:
+        if low in EXCLUDE_VARS or name in EXCLUDE_VARS:
             continue
         vars_found.append(name)
 
-    # únicos, preservando orden
-    seen = set()
-    out = []
+    # únicos preservando orden
+    out, seen = [], set()
     for v in vars_found:
         if v not in seen:
             seen.add(v)
             out.append(v)
 
     if not out:
-        # Para depurar sin pedirte pegar todo: devolvemos primeras líneas útiles
         head = "\n".join(text.splitlines()[:60])
         raise RuntimeError(
             "Pude leer el DDS pero no extraje variables.\n"
-            "Primeras 60 líneas del DDS (para debug):\n"
+            "Primeras 60 líneas del DDS:\n"
             f"{head}"
         )
-
     return out
+
 
 
 def resolve_variables(config: Merra2Config) -> List[str]:
