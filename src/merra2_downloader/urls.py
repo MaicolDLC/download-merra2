@@ -59,4 +59,16 @@ def generar_urls_merra_rango(config: Merra2Config) -> List[str]:
         var_params = "&".join(f"var={v}" for v in config.variables) if config.variables else ""
 
         url = (
-            f"{base_url}/{y}/{m}/{fname}"_
+            f"{base_url}/{y}/{m}/{fname}"
+            f"?{var_params}"
+            f"&north={config.north}&west={config.west}"
+            f"&east={config.east}&south={config.south}"
+            f"&horizStride=1"
+            f"&time_start={y}-{m}-{dd}T00:30:00Z"
+            f"&time_end={y}-{m}-{dd}T23:30:00Z"
+            f"&accept=netcdf4-classic"
+        )
+        urls.append(url)
+
+    return urls
+
