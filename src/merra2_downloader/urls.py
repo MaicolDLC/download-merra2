@@ -1,27 +1,26 @@
 # src/merra2_downloader/urls.py
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Sequence
-
+from typing import List, Tuple, Iterable
 import re
 import requests
 
 from .config import Merra2Config
 
-# THREDDS base (NCSS y OPeNDAP viven en el mismo host)
 THREDDS_HOST = "https://goldsmr4.gesdisc.eosdis.nasa.gov/thredds"
 DEFAULT_ACCEPT = "netcdf4-classic"
 
 # Variables típicas que NO queremos pedir como "var="
-# (coordenadas / dims / helpers)
 EXCLUDE_VARS = {
     "time", "lat", "lon", "lev", "level",
     "latitude", "longitude",
     "crs", "Lambert_Conformal", "projection",
 }
 
+# ----------------------------
+# Helpers: ESDT / naming
+# ----------------------------
 
 def merra2_bloque(year: int) -> int:
     """Bloque MERRA2 por año (100/200/300/400)."""
@@ -35,149 +34,255 @@ def merra2_bloque(year: int) -> int:
 
 
 def _shortname(producto: str) -> str:
-    """
-    producto puede venir como 'M2T1NXAER.5.12.4'.
-    Retornamos el ShortName base: 'M2T1NXAER'
-    """
+    """'M2T1NXFLX.5.12.4' -> 'M2T1NXFLX'"""
     return producto.split(".")[0].strip()
 
 
-def collection_from_esdt(producto: str) -> str:
+def _esdt_parts(producto: str) -> Tuple[str, str, str, str, str]:
     """
-    Deriva el nombre de colección (p.ej. 'tavg1_2d_aer_Nx') desde el ESDT M2TFHVGGG.
-    - ESDT: M2TFHVGGG :contentReference[oaicite:3]{index=3}
-    - collection name: freq_dims_group_HV :contentReference[oaicite:4]{index=4}
+    ESDT: M2TFHVGGG (9 chars)
     """
     esdt = _shortname(producto)
     if len(esdt) != 9 or not esdt.startswith("M2"):
         raise ValueError(f"ESDT inválido: {esdt} (esperaba algo tipo M2T1NXAER)")
+    T = esdt[2]   # I/T/C/S
+    F = esdt[3]   # 1/3/6/M/D/U/0
+    H = esdt[4]   # N
+    V = esdt[5]   # X/P/V/E
+    GGG = esdt[6:9]
+    return T, F, H, V, GGG
 
-    T = esdt[2]  # I/T/C/S
-    F = esdt[3]  # 1/3/6/M/D/U/0
-    H = esdt[4]  # N
-    V = esdt[5]  # X/P/V/E
-    GGG = esdt[6:9]  # AER, FLX, SLV, ...
+
+def collection_from_esdt(producto: str) -> str:
+    """
+    Colección: freq_dims_group_HV
+    """
+    T, F, H, V, GGG = _esdt_parts(producto)
 
     time_map = {"I": "inst", "T": "tavg", "C": "const", "S": "stat"}
     if T not in time_map:
-        raise ValueError(f"ESDT '{esdt}': T desconocido '{T}'")
+        raise ValueError(f"ESDT '{_shortname(producto)}': T desconocido '{T}'")
 
-    # dims: si V es X => 2D; si no => 3D
     dims = "2d" if V.upper() == "X" else "3d"
-
-    # group: minúscula
     group = GGG.lower()
-
-    # HV: H + v_minúscula (ej: N + x => Nx, N + p => Np)
     hv = f"{H}{V.lower()}"
 
-    # freq: se mantiene tal cual en el nombre de colección (ej: tavg1, inst3, const_2d..., etc.)
-    # para const suele ser const_... (en doc aparece const_2d_*), pero el ESDT trae F=0.
-    # Aquí lo dejamos consistente: const0_... NO existe, así que si es const, omitimos F.
     time_prefix = time_map[T]
     if time_prefix == "const":
+        # En el spec las colecciones const se nombran 'const_2d_*'
         return f"const_{dims}_{group}_{hv}"
     if time_prefix == "stat":
         return f"stat{F}_{dims}_{group}_{hv}"
     return f"{time_prefix}{F}_{dims}_{group}_{hv}"
 
 
-def filename_for_date(producto: str, yyyymmdd: str) -> str:
+def _is_monthly(producto: str) -> bool:
+    _, F, _, _, _ = _esdt_parts(producto)
+    return F in ("M", "U")
+
+
+def _is_constant(producto: str) -> bool:
+    T, _, _, _, _ = _esdt_parts(producto)
+    return T == "C"
+
+
+def _timestamp_for_period(producto: str, d: datetime) -> str:
     """
-    Nombre de archivo: MERRA2_{bloque}.{collection}.{yyyymmdd}.nc4
-    (runid.collection.timestamp) :contentReference[oaicite:5]{index=5}
+    Spec:
+    - yyyymmdd para diarios/horarios
+    - yyyymm para mensuales (M/U)
     """
-    year = int(yyyymmdd[:4])
-    bloque = merra2_bloque(year)
+    if _is_monthly(producto):
+        return d.strftime("%Y%m")
+    if _is_constant(producto):
+        # En THREDDS típicamente aparecen como ...00000000.nc4
+        # (si en tu caso fuese distinto, se ajusta aquí)
+        return "00000000"
+    return d.strftime("%Y%m%d")
+
+
+def filename_for_date(producto: str, d: datetime) -> str:
+    """
+    Nombre:
+    MERRA2_{bloque}.{collection}.{timestamp}.nc4
+    """
     collection = collection_from_esdt(producto)
-    return f"MERRA2_{bloque}.{collection}.{yyyymmdd}.nc4"
+    stamp = _timestamp_for_period(producto, d)
+
+    if _is_constant(producto):
+        # Constantes no dependen del año-stream: se sirven como un solo granule “ancillary”.
+        # Si alguna colección const tuya usa otro runid, se puede parametrizar.
+        runid = 101
+    else:
+        runid = merra2_bloque(d.year)
+
+    return f"MERRA2_{runid}.{collection}.{stamp}.nc4"
 
 
-def _dds_url(producto: str, y: str, m: str, fname: str) -> str:
-    # OPeNDAP dataset descriptor: .../dodsC/<producto>/<y>/<m>/<fname>.dds
+# ----------------------------
+# Iteradores (día vs mes)
+# ----------------------------
+
+def _iter_days(d0: datetime, d1: datetime) -> Iterable[datetime]:
+    n = (d1 - d0).days
+    for i in range(n + 1):
+        yield d0 + timedelta(days=i)
+
+
+def _iter_months(d0: datetime, d1: datetime) -> Iterable[datetime]:
+    """
+    Itera meses inclusive: d0..d1 por (YYYY,MM)
+    """
+    y, m = d0.year, d0.month
+    end_y, end_m = d1.year, d1.month
+
+    while (y < end_y) or (y == end_y and m <= end_m):
+        yield datetime(y, m, 1)
+        m += 1
+        if m == 13:
+            m = 1
+            y += 1
+
+
+def iter_periods(config: Merra2Config) -> List[datetime]:
+    d0 = datetime.strptime(config.inicio, "%Y-%m-%d")
+    d1 = datetime.strptime(config.fin, "%Y-%m-%d")
+
+    if _is_constant(config.producto):
+        return [d0]  # un solo granule
+    if _is_monthly(config.producto):
+        return list(_iter_months(d0, d1))
+    return list(_iter_days(d0, d1))
+
+
+# ----------------------------
+# DDS variable discovery
+# ----------------------------
+
+def _dds_url_dated(producto: str, y: str, m: str, fname: str) -> str:
     return f"{THREDDS_HOST}/dodsC/{producto}/{y}/{m}/{fname}.dds"
 
 
-_DDS_VAR_RE = re.compile(
-    r"^\s*(?:Byte|Int16|UInt16|Int32|UInt32|Int64|UInt64|Float32|Float64|String)\s+"
-    r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\]\s*)*;",
+def _dds_url_flat(producto: str, fname: str) -> str:
+    return f"{THREDDS_HOST}/dodsC/{producto}/{fname}.dds"
+
+
+# Caso 1: variables declaradas “planas”
+_DDS_FLAT_VAR_RE = re.compile(
+    r"^\s*(Byte|Int16|Int32|Int64|Float32|Float64|String)\s+([A-Za-z0-9_]+)\s*(\[[^\]]+\])?\s*;",
     re.MULTILINE,
 )
 
-def variables_from_dds(producto: str, y: str, m: str, yyyymmdd: str) -> List[str]:
-    fname = filename_for_date(producto, yyyymmdd)
-    url = _dds_url(producto, y, m, fname)
+# Caso 2 (tu DDS): variables como “Grid { ... } NAME;”
+_DDS_GRID_NAME_RE = re.compile(
+    r"\}\s*([A-Za-z0-9_]+)\s*;",
+    re.MULTILINE,
+)
 
-    s = requests.Session()
-    s.trust_env = True
-    r = s.get(url, timeout=60)
+def _parse_vars_from_dds(text: str) -> List[str]:
+    vars_found: List[str] = []
 
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"No pude leer DDS (HTTP {r.status_code}). URL: {url}\n"
-            "Revisa tu .netrc y que exista ese día."
-        )
+    # 1) Grid-style: } BSTAR;
+    for name in _DDS_GRID_NAME_RE.findall(text):
+        if name in EXCLUDE_VARS:
+            continue
+        vars_found.append(name)
 
-    text = r.text
-
-    vars_found = []
-    for name in _DDS_VAR_RE.findall(text):
-        low = name.lower()
-        if low in EXCLUDE_VARS or name in EXCLUDE_VARS:
+    # 2) Flat-style: Float32 VAR[...];
+    for _typ, name, _dims in _DDS_FLAT_VAR_RE.findall(text):
+        if name in EXCLUDE_VARS:
             continue
         vars_found.append(name)
 
     # únicos preservando orden
-    out, seen = [], set()
+    seen = set()
+    out = []
     for v in vars_found:
         if v not in seen:
             seen.add(v)
             out.append(v)
-
-    if not out:
-        head = "\n".join(text.splitlines()[:60])
-        raise RuntimeError(
-            "Pude leer el DDS pero no extraje variables.\n"
-            "Primeras 60 líneas del DDS:\n"
-            f"{head}"
-        )
     return out
 
+
+def variables_from_dds(producto: str, d: datetime) -> List[str]:
+    """
+    Descubre variables reales del archivo consultando el .dds (requiere auth vía .netrc).
+    Probamos layout con /YYYY/MM/ y layout plano (para constantes u otros casos).
+    """
+    fname = filename_for_date(producto, d)
+
+    y = d.strftime("%Y")
+    m = d.strftime("%m")
+
+    s = requests.Session()
+    s.trust_env = True  # usa ~/.netrc
+
+    # intentamos primero el layout “normal” (/YYYY/MM/)
+    tried = []
+    for url in (_dds_url_dated(producto, y, m, fname), _dds_url_flat(producto, fname)):
+        tried.append(url)
+        r = s.get(url, timeout=60)
+        if r.status_code != 200:
+            continue
+
+        text = r.text
+        out = _parse_vars_from_dds(text)
+        if not out:
+            head = "\n".join(text.splitlines()[:80])
+            raise RuntimeError(
+                "Pude leer el DDS pero no extraje variables.\n"
+                "Primeras 80 líneas del DDS (para debug):\n"
+                f"{head}"
+            )
+        return out
+
+    raise RuntimeError(
+        "No pude leer DDS para listar variables.\n"
+        f"Probé:\n- " + "\n- ".join(tried) + "\n"
+        "Asegúrate de tener autenticación Earthdata activa (.netrc) y que el granule exista."
+    )
 
 
 def resolve_variables(config: Merra2Config) -> List[str]:
     """
-    - Si el usuario pasó variables, se usan.
-    - Si variables está vacío, consultamos el servidor y usamos todas las variables del dataset para la fecha inicio.
+    - Si el usuario pasó variables, se usan tal cual.
+    - Si variables=[] => se consultan todas las variables del dataset vía DDS (para el primer periodo).
     """
     if config.variables and len(config.variables) > 0:
         return list(config.variables)
 
-    d0 = datetime.strptime(config.inicio, "%Y-%m-%d")
-    y = d0.strftime("%Y")
-    m = d0.strftime("%m")
-    yyyymmdd = d0.strftime("%Y%m%d")
+    periods = iter_periods(config)
+    return variables_from_dds(config.producto, periods[0])
 
-    return variables_from_dds(config.producto, y=y, m=m, yyyymmdd=yyyymmdd)
+
+# ----------------------------
+# URL generator
+# ----------------------------
+
+def _ncss_base_dated(producto: str, y: str, m: str, fname: str) -> str:
+    return f"{THREDDS_HOST}/ncss/grid/{producto}/{y}/{m}/{fname}"
+
+
+def _ncss_base_flat(producto: str, fname: str) -> str:
+    return f"{THREDDS_HOST}/ncss/grid/{producto}/{fname}"
 
 
 def generar_urls_merra_rango(config: Merra2Config) -> List[str]:
-    d0 = datetime.strptime(config.inicio, "%Y-%m-%d")
-    d1 = datetime.strptime(config.fin, "%Y-%m-%d")
-
-    # ✅ aquí está la magia: si variables=[] => se detectan todas para ESTE producto
     vars_list = resolve_variables(config)
+    periods = iter_periods(config)
 
     urls: List[str] = []
-    for i in range((d1 - d0).days + 1):
-        d = d0 + timedelta(days=i)
+    for d in periods:
+        fname = filename_for_date(config.producto, d)
+
         y = d.strftime("%Y")
         m = d.strftime("%m")
-        dd = d.strftime("%d")
-        yyyymmdd = d.strftime("%Y%m%d")
 
-        fname = filename_for_date(config.producto, yyyymmdd)
-        base_url = f"{THREDDS_HOST}/ncss/grid/{config.producto}/{y}/{m}/{fname}"
+        # layout normal vs plano (constantes)
+        if _is_constant(config.producto):
+            base_url = _ncss_base_flat(config.producto, fname)
+        else:
+            base_url = _ncss_base_dated(config.producto, y, m, fname)
 
         params = [f"var={v}" for v in vars_list]
         params += [
@@ -186,8 +291,6 @@ def generar_urls_merra_rango(config: Merra2Config) -> List[str]:
             f"east={config.east}",
             f"south={config.south}",
             "horizStride=1",
-            f"time_start={y}-{m}-{dd}T00:30:00Z",
-            f"time_end={y}-{m}-{dd}T23:30:00Z",
             f"accept={DEFAULT_ACCEPT}",
         ]
         query = "&".join(params)
@@ -204,6 +307,7 @@ __all__ = [
     "resolve_variables",
     "generar_urls_merra_rango",
 ]
+
 
 
 
