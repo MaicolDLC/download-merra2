@@ -13,7 +13,7 @@ PRODUCTOS_MERRA2 = {
     # "M2T1NXSLV.5.12.4": "tavg1_2d_slv_Nx",
 }
 
-# Lista completa de variables (solo para el producto de Aerosoles AER)
+# Lista "ALL" segura para M2T1NXAER.5.12.4 (sin SO2 ni DMS para evitar 400)
 AER_ALL_VARIABLES = [
     # Black Carbon (BC)
     "BCANGSTR", "BCCMASS", "BCEXTTAU", "BCFLUXU", "BCFLUXV", "BCSCATAU", "BCSMASS",
@@ -22,16 +22,14 @@ AER_ALL_VARIABLES = [
     "DUSCAT25", "DUSCATAU", "DUSMASS", "DUSMASS25",
     # Organic Carbon (OC)
     "OCANGSTR", "OCCMASS", "OCEXTTAU", "OCFLUXU", "OCFLUXV", "OCSCATAU", "OCSMASS",
-    # Sulfates (SO / SU)
-    "SO2CMASS", "SO2SMASS", "SO4CMASS", "SO4SMASS",
+    # Sulfates (SU / SO4)
+    "SO4CMASS", "SO4SMASS",
     "SUANGSTR", "SUEXTTAU", "SUFLUXU", "SUFLUXV", "SUSCATAU",
     # Sea Salt (SS)
     "SSANGSTR", "SSCMASS", "SSCMASS25", "SSEXTT25", "SSEXTTAU",
     "SSFLUXU", "SSFLUXV", "SSSCAT25", "SSSCATAU", "SSSMASS", "SSSMASS25",
     # Total Aerosol
     "TOTANGSTR", "TOTEXTTAU", "TOTSCATAU",
-    # DMS
-    "DMSCMASS", "DMSSMASS",
 ]
 
 
@@ -46,6 +44,9 @@ def merra2_bloque(year: int) -> int:
 
 
 def nombre_archivo_producto(producto: str) -> str:
+    """
+    Devuelve la parte central del nombre de archivo para un producto MERRA-2.
+    """
     if producto in PRODUCTOS_MERRA2:
         return PRODUCTOS_MERRA2[producto]
 
@@ -69,7 +70,9 @@ def generar_urls_merra_rango(config: Merra2Config) -> List[str]:
 
     producto_core = nombre_archivo_producto(config.producto)
 
-    # ✅ Si no vienen variables, usamos TODAS (solo AER). Para otros productos, error claro.
+    # Si no vienen variables:
+    # - AER: usa lista ALL segura
+    # - otros: error (NCSS exige var=)
     vars_list = list(config.variables) if config.variables else []
     if not vars_list:
         if config.producto.startswith("M2T1NXAER"):
@@ -89,7 +92,7 @@ def generar_urls_merra_rango(config: Merra2Config) -> List[str]:
         base_url = f"https://goldsmr4.gesdisc.eosdis.nasa.gov/thredds/ncss/grid/{config.producto}"
         fname = f"MERRA2_{bloque}.{producto_core}.{y}{m}{dd}.nc4"
 
-        # ✅ Construcción robusta del querystring
+        # Construcción robusta del querystring
         params = [f"var={v}" for v in vars_list]
         params += [
             f"north={config.north}",
@@ -103,8 +106,8 @@ def generar_urls_merra_rango(config: Merra2Config) -> List[str]:
         ]
         query = "&".join(params)
 
-        url = f"{base_url}/{y}/{m}/{fname}?{query}"
-        urls.append(url)
+        urls.append(f"{base_url}/{y}/{m}/{fname}?{query}")
 
     return urls
+
 
