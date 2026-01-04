@@ -20,7 +20,7 @@ def write_metadata(file_path: Path, config: Merra2Config) -> Path:
     md_dir = metadata_dir(file_path.parent)
     md_dir.mkdir(parents=True, exist_ok=True)
 
-    data = {
+    data: Dict[str, Any] = {
         "configuracion": {
             "north": config.north,
             "south": config.south,
@@ -75,4 +75,7 @@ def config_matches(file_path: Path, config: Merra2Config) -> bool:
 
 def safe_remove_file_and_metadata(file_path: Path) -> None:
     try:
-        if file 
+        if file_path.exists():
+            file_path.unlink()
+    finally:
+        delete_metadata(file_path)
