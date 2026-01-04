@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "merra2-downloader"
+version = "0.1.0"
+description = "Descargador MERRA-2 (GES DISC) con recorte por bbox y metadatos."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "requests>=2.31",
+  "typer>=0.12",
+  "rich>=13.0",
+]
+
+[project.scripts]
+merra2-download = "merra2_downloader.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
