@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Callable, Dict
 
 import requests
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import Merra2Config
 from .urls import generar_urls_merra_rango
@@ -17,6 +17,12 @@ from .metadata import (
     write_metadata,
     safe_remove_file_and_metadata,
 )
+
+# Barra de progreso (opcional)
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    tqdm = None
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,7 @@ class Merra2Client:
         config: Merra2Config,
         dry_run: bool = False,
         progress_cb: Optional[Callable[[str, str], None]] = None,
+        show_progress: bool = True,   # ✅ NUEVO: permitir activar/desactivar barra
     ) -> DownloadResult:
         urls = generar_urls_merra_rango(config)
 
@@ -119,7 +126,7 @@ class Merra2Client:
         lock = threading.Lock()
         resultados: Dict[str, int] = {"exitosos": 0, "fallidos": 0}
 
-        def worker(url: str) -> None:
+        def worker(url: str) -> str:
             fname = url.split("/")[-1].split("?")[0]
             dest = Path(config.directorio) / fname
             estado = self.download_file(url, dest, config)
@@ -133,7 +140,23 @@ class Merra2Client:
             if progress_cb:
                 progress_cb(fname, estado)
 
+            return estado
+
+        # ✅ Barra de progreso por archivo completado
+        use_bar = bool(show_progress and tqdm is not None)
+        pbar = tqdm(total=len(urls), desc="Descargando", unit="archivo") if use_bar else None
+
         with ThreadPoolExecutor(max_workers=config.max_workers) as ex:
-            list(ex.map(worker, urls))
+            futures = [ex.submit(worker, u) for u in urls]
+
+            for fut in as_completed(futures):
+                _ = fut.result()  # levanta error si ocurre
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix(ok=resultados["exitosos"], fail=resultados["fallidos"])
+
+        if pbar:
+            pbar.close()
 
         return DownloadResult(exitosos=resultados["exitosos"], fallidos=resultados["fallidos"])
+
