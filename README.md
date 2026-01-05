@@ -21,7 +21,7 @@ Para descargar datos de NASA GES DISC, necesitas una cuenta de [Earthdata](https
 ## 3) Guía de Productos y Especificaciones
 La descarga se realiza de acuerdo a los productos disponibles en el Catálogo oficial de GES DISC: 
 * [Catálogo THREDDS MERRA-2](https://goldsmr4.gesdisc.eosdis.nasa.gov/thredds/catalog/catalog.html)
-El catálogo incluye productos con resolución horaria, diaria y mensual. Para conocer los nombres exactos de las variables, dimensiones y nombres de archivos, consulta el manual técnico incluido en este repositorio:
+El catálogo incluye productos con resolución horaria, diurno y mensual. Para conocer los nombres exactos de las variables, dimensiones y nombres de archivos, consulta el manual técnico incluido en este repositorio:
 * MERRA2_Specification.pdf 
 
 
